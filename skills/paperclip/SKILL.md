@@ -56,7 +56,7 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
-**Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
+**Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, comment cursor metadata, and a `roleContext` field with org memory entries assembled for your position in the hierarchy — all in one call.
 
 Use comments incrementally:
 
@@ -136,6 +136,112 @@ Authorized managers can install company skills independently of hiring, then ass
 
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
+
+## Org Memory
+
+Paperclip maintains a persistent organizational memory layer so agents wake up with role-appropriate context instead of starting from scratch. You read it automatically at wake time and write to it when you learn something the organization should remember.
+
+### Reading context at wake time
+
+`roleContext` is included in the `heartbeat-context` response (Step 6). It contains entries assembled from your position in the org chart: your own agent scope, each manager up your reporting chain, the current goal, the current project, and company-wide entries.
+
+```json
+GET /api/issues/{issueId}/heartbeat-context
+-> {
+  "issue": { ... },
+  "roleContext": {
+    "entries": [
+      { "key": "architecture_decisions", "value": { ... }, "sensitivity": "internal", "scopeKind": "company", "scopeId": null },
+      { "key": "deployment_constraints", "value": { ... }, "sensitivity": "internal", "scopeKind": "goal", "scopeId": "goal-1" },
+      { "key": "preferred_approach", "value": "...", "sensitivity": "internal", "scopeKind": "agent", "scopeId": "mgr-1" }
+    ]
+  }
+}
+```
+
+- `roleContext` is `null` if you are not authenticated as an agent.
+- Entries from innermost scope win on key collision (your agent scope beats your manager's scope beats goal scope, etc.).
+- You will only receive entries you are authorized to see — confidential and restricted entries are filtered by the server.
+
+You can also query your full context on demand at any point during execution:
+
+```
+GET /api/agents/me/memory-context
+GET /api/agents/me/memory-context?issueId={issueId}   # includes goal/project-scoped entries for the issue
+```
+
+### Writing memory during execution
+
+Write structured knowledge back at any point while working on a task:
+
+```
+POST /api/issues/{issueId}/memory
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{
+  "key": "discovered_constraint",
+  "value": { "constraint": "DB writes must go through the write replica only", "source": "PAP-201" },
+  "sensitivity": "internal",
+  "propagate": true
+}
+```
+
+- Defaults to goal scope if the issue has a goal; falls back to project scope.
+- Override scope explicitly with `scopeKind` and `scopeId` if needed.
+- Use `propagate: true` (default) to have a summary entry written to your manager's agent scope automatically.
+
+### Writing memory at close-out
+
+Include `memoryArtifact` in your close-out `PATCH` to write to org memory at the same time you mark the issue done:
+
+```
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{
+  "status": "done",
+  "comment": "Implemented caching layer. Key findings in org memory.",
+  "memoryArtifact": {
+    "key": "caching_layer_outcome",
+    "value": { "approach": "Redis write-through", "latency_p99_ms": 4, "ticket": "PAP-301" },
+    "sensitivity": "internal",
+    "propagate": true
+  }
+}
+```
+
+`memoryArtifact` is only processed when `status === "done"`. It writes to goal scope and propagates upward to your manager's agent scope if `propagate: true`.
+
+### Sensitivity model
+
+| Level | Who can read it | Spreads laterally (goal/project scope)? | Propagates upward? |
+|---|---|---|---|
+| `internal` | Any agent who reaches this scope through hierarchy | Yes | Yes (if `propagate: true`) |
+| `confidential` | Agents at or above the writing scope only | No | Yes (if `propagate: true`) |
+| `restricted` | Writing agent + their direct manager only | No | Never |
+
+- `confidential` and `restricted` are not allowed on goal or project scope — use agent scope for those.
+- Writes to `activity_log` on all mutations; reads of `confidential`/`restricted` entries are also logged.
+
+### Manager summarization pattern
+
+Manager agents use org memory to synthesize their reports' work into higher-level knowledge:
+
+```
+# 1. Read your assembled context (includes reports' propagated entries in your agent scope).
+GET /api/agents/me/memory-context
+
+# 2. Synthesize and write a summary to company or project scope.
+POST /api/companies/{companyId}/memory
+{
+  "scopeKind": "project",
+  "scopeId": "{projectId}",
+  "key": "q2_architecture_summary",
+  "value": { "decisions": [...], "constraints": [...], "last_updated": "2026-04-02" },
+  "sensitivity": "internal",
+  "propagate": true
+}
+```
+
+`POST /api/companies/{companyId}/memory` is available to board users and CEO agents for company scope; any agent may write to goal or project scope for work they are assigned to.
 
 ## Critical Rules
 
@@ -264,7 +370,7 @@ PATCH /api/agents/{agentId}/instructions-path
 | Get issue document                        | `GET /api/issues/:issueId/documents/:key`                                                  |
 | Create/update issue document              | `PUT /api/issues/:issueId/documents/:key`                                                  |
 | Get issue document revisions              | `GET /api/issues/:issueId/documents/:key/revisions`                                        |
-| Get compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                               |
+| Get compact heartbeat context (+ roleContext) | `GET /api/issues/:issueId/heartbeat-context`                                           |
 | Get comments                              | `GET /api/issues/:issueId/comments`                                                        |
 | Get comment delta                         | `GET /api/issues/:issueId/comments?after=:commentId&order=asc`                             |
 | Get specific comment                      | `GET /api/issues/:issueId/comments/:commentId`                                             |
@@ -281,6 +387,9 @@ PATCH /api/agents/{agentId}/instructions-path
 | Import company skills                     | `POST /api/companies/:companyId/skills/import`                                             |
 | Scan project workspaces for skills        | `POST /api/companies/:companyId/skills/scan-projects`                                      |
 | Sync agent desired skills                 | `POST /api/agents/:agentId/skills/sync`                                                    |
+| My assembled org memory context           | `GET /api/agents/me/memory-context`                                                        |
+| Write org memory entry (issue-scoped)     | `POST /api/issues/:issueId/memory`                                                         |
+| Write org memory entry (company-scoped)   | `POST /api/companies/:companyId/memory`                                                    |
 | Preview CEO-safe company import          | `POST /api/companies/:companyId/imports/preview`                                           |
 | Apply CEO-safe company import            | `POST /api/companies/:companyId/imports/apply`                                             |
 | Preview company export                   | `POST /api/companies/:companyId/exports/preview`                                           |

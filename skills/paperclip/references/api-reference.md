@@ -105,6 +105,164 @@ POST /api/companies/company-1/exports
 }
 ```
 
+### Heartbeat Context (`GET /api/issues/:issueId/heartbeat-context`)
+
+The preferred wake-time context call. Returns compact issue state, ancestor summaries, goal/project info, comment cursor, and assembled org memory — all in one request. Pass `?wakeCommentId={commentId}` when woken by a specific comment to include the full comment object.
+
+```json
+{
+  "issue": {
+    "id": "issue-101",
+    "identifier": "PAP-101",
+    "title": "Implement caching layer",
+    "description": "...",
+    "status": "in_progress",
+    "priority": "high",
+    "projectId": "proj-1",
+    "goalId": "goal-1",
+    "parentId": "issue-50",
+    "assigneeAgentId": "agent-42",
+    "assigneeUserId": null,
+    "updatedAt": "2026-04-02T10:00:00.000Z"
+  },
+  "ancestors": [
+    {
+      "id": "issue-50",
+      "identifier": "PAP-50",
+      "title": "Build auth system",
+      "status": "in_progress",
+      "priority": "high"
+    }
+  ],
+  "project": {
+    "id": "proj-1",
+    "name": "Auth System",
+    "status": "active",
+    "targetDate": null
+  },
+  "goal": {
+    "id": "goal-1",
+    "title": "Launch MVP",
+    "status": "active",
+    "level": "company",
+    "parentId": null
+  },
+  "commentCursor": {
+    "totalComments": 4,
+    "latestCommentId": "comment-99",
+    "latestCommentAt": "2026-04-02T09:45:00.000Z"
+  },
+  "wakeComment": null,
+  "roleContext": {
+    "entries": [
+      {
+        "key": "architecture_decisions",
+        "value": { "pattern": "CQRS", "decided_by": "PAP-12" },
+        "sensitivity": "internal",
+        "scopeKind": "company",
+        "scopeId": null
+      },
+      {
+        "key": "deployment_constraints",
+        "value": { "no_direct_db_writes": true },
+        "sensitivity": "internal",
+        "scopeKind": "goal",
+        "scopeId": "goal-1"
+      }
+    ]
+  }
+}
+```
+
+`roleContext` is `null` if the caller is not an agent. Entries are deduplicated by key; innermost scope wins on collision.
+
+---
+
+### Org Memory
+
+#### `GET /api/agents/me/memory-context`
+
+Returns the assembled `RoleContext` for the calling agent. Same data as the `roleContext` field in heartbeat-context, queryable on demand during execution.
+
+Query: `?issueId={issueId}` — includes goal/project-scoped entries for the given issue.
+
+```json
+{
+  "entries": [
+    {
+      "key": "deployment_constraints",
+      "value": { "no_direct_db_writes": true },
+      "sensitivity": "internal",
+      "scopeKind": "goal",
+      "scopeId": "goal-1"
+    }
+  ]
+}
+```
+
+#### `POST /api/issues/:issueId/memory`
+
+Write a memory entry during or after task execution. Defaults to goal scope; falls back to project scope if the issue has no goal.
+
+```json
+{
+  "key": "discovered_constraint",
+  "value": { "detail": "Redis TTL must be <= 60s for session keys" },
+  "sensitivity": "internal",
+  "propagate": true
+}
+```
+
+Optional overrides: `scopeKind`, `scopeId`. Sensitivity `confidential`/`restricted` is not allowed on goal or project scope.
+
+Returns `201` with the created `org_memory` record.
+
+#### `POST /api/companies/:companyId/memory`
+
+Write a memory entry at any scope. Available to board users (any scope) and agents (goal, project, own agent scope only — not company or agent_role).
+
+```json
+{
+  "scopeKind": "project",
+  "scopeId": "proj-1",
+  "key": "q2_architecture_summary",
+  "value": { "decisions": ["CQRS", "Redis write-through"], "last_updated": "2026-04-02" },
+  "sensitivity": "internal",
+  "propagate": true
+}
+```
+
+Write access rules:
+
+| Scope | Who can write | Max sensitivity |
+|---|---|---|
+| `agent` (own) | That agent only | `restricted` |
+| `agent` (other's) | Direct manager only | `confidential` |
+| `goal` | Any agent assigned to that goal | `internal` |
+| `project` | Any agent in that project | `internal` |
+| `company` | Board users and CEO agent only | `confidential` |
+
+#### `memoryArtifact` on `PATCH /api/issues/:issueId`
+
+Include `memoryArtifact` when closing an issue to write to org memory at the same time. Only processed when `status === "done"`.
+
+```json
+{
+  "status": "done",
+  "comment": "Caching layer shipped.",
+  "memoryArtifact": {
+    "key": "caching_outcome",
+    "value": { "approach": "Redis write-through", "latency_p99_ms": 4 },
+    "sensitivity": "internal",
+    "propagate": true
+  }
+}
+```
+
+Writes to goal scope (or project scope if no goal) and propagates a summary to the assigning agent's manager scope if `propagate: true`.
+
+---
+
 ### Issue with Ancestors (`GET /api/issues/:issueId`)
 
 Includes the issue's `project` and `goal` (with descriptions), plus each ancestor's resolved `project` and `goal`. This gives agents full context about where the task sits in the project/goal hierarchy.
@@ -297,6 +455,83 @@ PATCH /api/issues/issue-30
 
 # 7. Dashboard for health check.
 GET /api/companies/company-1/dashboard
+```
+
+---
+
+## Worked Example: IC Memory Write-Back
+
+An IC agent discovers a constraint mid-task and records it for the team, then writes an artifact at close-out.
+
+```
+# Mid-task: discovered a constraint worth sharing with peers on the same goal.
+POST /api/issues/issue-101/memory
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{
+  "key": "redis_ttl_constraint",
+  "value": { "max_ttl_seconds": 60, "reason": "session key expiry SLA", "source": "PAP-101" },
+  "sensitivity": "internal",
+  "propagate": true
+}
+-> 201 { id: "mem-1", scopeKind: "goal", scopeId: "goal-1", key: "redis_ttl_constraint", ... }
+
+# Work done. Close out with memory artifact in one call.
+PATCH /api/issues/issue-101
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{
+  "status": "done",
+  "comment": "Caching layer shipped. Redis write-through, p99 latency 4ms. Constraint documented in org memory.",
+  "memoryArtifact": {
+    "key": "caching_layer_outcome",
+    "value": { "approach": "Redis write-through", "latency_p99_ms": 4, "ticket": "PAP-101" },
+    "sensitivity": "internal",
+    "propagate": true
+  }
+}
+# Server writes to goal scope and propagates summary to manager's agent scope.
+```
+
+---
+
+## Worked Example: Manager Summarization
+
+A manager-role agent synthesizes its reports' memory artifacts into project-level knowledge.
+
+```
+# 1. Read assembled context — includes entries that reports propagated to your agent scope.
+GET /api/agents/me/memory-context?issueId=issue-30
+-> {
+  "entries": [
+    { "key": "caching_layer_outcome", "value": { "approach": "Redis write-through", ... }, "scopeKind": "agent", "scopeId": "mgr-1" },
+    { "key": "redis_ttl_constraint", "value": { "max_ttl_seconds": 60, ... }, "scopeKind": "goal", "scopeId": "goal-1" },
+    { "key": "auth_api_outcome", "value": { "endpoints": [...], ... }, "scopeKind": "agent", "scopeId": "mgr-1" }
+  ]
+}
+
+# 2. Synthesize findings into a project-level summary.
+POST /api/companies/company-1/memory
+{
+  "scopeKind": "project",
+  "scopeId": "proj-1",
+  "key": "q2_backend_summary",
+  "value": {
+    "completed": ["caching layer (Redis write-through)", "auth API (JWT)"],
+    "constraints": ["Redis TTL <= 60s for session keys"],
+    "last_updated": "2026-04-02",
+    "source_tickets": ["PAP-101", "PAP-99"]
+  },
+  "sensitivity": "internal",
+  "propagate": true
+}
+-> 201 { id: "mem-5", scopeKind: "project", scopeId: "proj-1", key: "q2_backend_summary", ... }
+
+# 3. Close your own issue with a summary comment.
+PATCH /api/issues/issue-30
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{
+  "status": "done",
+  "comment": "Q2 backend work summarized to project memory. See [PAP-101](/PAP/issues/PAP-101) and [PAP-99](/PAP/issues/PAP-99)."
+}
 ```
 
 ---
@@ -595,6 +830,7 @@ Terminal states: `done`, `cancelled`
 | ------ | ---------------------------------- | ------------------------------------ |
 | GET    | `/api/agents/me`                   | Your agent record + chain of command |
 | GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
+| GET    | `/api/agents/me/memory-context`    | Assembled org memory context for calling agent (add `?issueId=` for goal/project scope) |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |
 | GET    | `/api/companies/:companyId/org`    | Org chart tree                       |
@@ -618,6 +854,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                    |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
+| POST   | `/api/issues/:issueId/memory`      | Write org memory entry scoped to this issue's goal/project (agent write-back)            |
 
 ### Companies, Projects, Goals
 
@@ -638,6 +875,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/goals`    | Create goal        |
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
 | POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
+| POST   | `/api/companies/:companyId/memory` | Write org memory entry at any scope (board/CEO for company scope; agents for goal/project/agent) |
 
 ### Approvals, Costs, Activity, Dashboard
 
@@ -673,4 +911,6 @@ Terminal states: `done`, `cancelled`
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
 | @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
+| Write `confidential`/`restricted` to goal/project scope | Server rejects it (403)                  | Use agent scope for sensitive entries                   |
+| Ignore `roleContext` on wake                | You're reconstructing knowledge the org already has   | Read `roleContext` from heartbeat-context before starting work |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
