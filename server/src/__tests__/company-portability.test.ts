@@ -104,6 +104,17 @@ vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
 
+const mockOrgMemorySvc = vi.hoisted(() => ({
+  readAllForExport: vi.fn(async () => []),
+  write: vi.fn(),
+  readForAgent: vi.fn(),
+  propagateUpward: vi.fn(),
+}));
+
+vi.mock("../services/org-memory.js", () => ({
+  orgMemoryService: () => mockOrgMemorySvc,
+}));
+
 const { companyPortabilityService, parseGitHubSourceUrl } = await import("../services/company-portability.js");
 
 function asTextFile(entry: CompanyPortabilityFileEntry | undefined) {
@@ -2181,5 +2192,84 @@ describe("company portability", () => {
     expect(nestedMaterializedFiles?.["AGENTS.md"]).toContain("You are ClaudeCoder.");
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toMatch(/^---\n/);
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toContain('name: "ClaudeCoder"');
+  });
+});
+
+describe("org memory export", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    companySvc.getById.mockResolvedValue({
+      id: "company-1",
+      name: "Acme",
+      description: null,
+      issuePrefix: "ACM",
+      brandColor: null,
+      logoAssetId: null,
+      logoUrl: null,
+      requireBoardApprovalForNewAgents: false,
+    });
+    agentSvc.list.mockResolvedValue([]);
+    companySkillSvc.listFull.mockResolvedValue([]);
+    agentInstructionsSvc.exportFiles.mockResolvedValue({ files: {}, warnings: [], entryFile: null });
+    issueSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+    routineSvc.list.mockResolvedValue([]);
+  });
+
+  it("excludes org memory by default and adds a warning when entries exist", async () => {
+    mockOrgMemorySvc.readAllForExport.mockResolvedValue([
+      { scopeKind: "goal", scopeId: "goal-1", key: "arch", valueJson: { pattern: "CQRS" }, sensitivity: "internal", propagate: true },
+      { scopeKind: "agent", scopeId: "agent-1", key: "private", valueJson: "secret", sensitivity: "restricted", propagate: false },
+    ]);
+
+    const svc = companyPortabilityService({} as any);
+    const result = await svc.exportBundle("company-1", { include: { orgMemory: false } });
+
+    expect(result.files["org-memory/entries.yaml"]).toBeUndefined();
+    expect(result.warnings.some((w) => w.includes("org memory") && w.includes("not included"))).toBe(true);
+    expect(result.manifest.includes.orgMemory).toBe(false);
+  });
+
+  it("exports only internal entries when include.orgMemory is true", async () => {
+    mockOrgMemorySvc.readAllForExport.mockResolvedValue([
+      { scopeKind: "goal", scopeId: "goal-1", key: "arch", valueJson: { pattern: "CQRS" }, sensitivity: "internal", propagate: true },
+      { scopeKind: "company", scopeId: null, key: "budget_note", valueJson: "confidential stuff", sensitivity: "confidential", propagate: false },
+      { scopeKind: "agent", scopeId: "agent-1", key: "private", valueJson: "restricted stuff", sensitivity: "restricted", propagate: false },
+    ]);
+
+    const svc = companyPortabilityService({} as any);
+    const result = await svc.exportBundle("company-1", { include: { orgMemory: true } });
+
+    expect(result.files["org-memory/entries.yaml"]).toBeDefined();
+    const yaml = result.files["org-memory/entries.yaml"] as string;
+    expect(yaml).toContain("arch");
+    expect(yaml).not.toContain("confidential stuff");
+    expect(yaml).not.toContain("restricted stuff");
+    expect(result.warnings.some((w) => w.includes("Excluded") && w.includes("2"))).toBe(true);
+    expect(result.manifest.includes.orgMemory).toBe(true);
+  });
+
+  it("produces no warning and no file when no org memory entries exist", async () => {
+    mockOrgMemorySvc.readAllForExport.mockResolvedValue([]);
+
+    const svc = companyPortabilityService({} as any);
+    const result = await svc.exportBundle("company-1", { include: { orgMemory: false } });
+
+    expect(result.files["org-memory/entries.yaml"]).toBeUndefined();
+    expect(result.warnings.some((w) => w.includes("org memory"))).toBe(false);
+    expect(result.manifest.includes.orgMemory).toBe(false);
+  });
+
+  it("produces no org-memory file when all entries are excluded by sensitivity", async () => {
+    mockOrgMemorySvc.readAllForExport.mockResolvedValue([
+      { scopeKind: "agent", scopeId: "agent-1", key: "private", valueJson: "secret", sensitivity: "restricted", propagate: false },
+    ]);
+
+    const svc = companyPortabilityService({} as any);
+    const result = await svc.exportBundle("company-1", { include: { orgMemory: true } });
+
+    expect(result.files["org-memory/entries.yaml"]).toBeUndefined();
+    expect(result.warnings.some((w) => w.includes("Excluded") && w.includes("1"))).toBe(true);
+    expect(result.manifest.includes.orgMemory).toBe(false);
   });
 });

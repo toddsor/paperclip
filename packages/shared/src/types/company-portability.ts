@@ -4,6 +4,7 @@ export interface CompanyPortabilityInclude {
   projects: boolean;
   issues: boolean;
   skills: boolean;
+  orgMemory: boolean;
 }
 
 export interface CompanyPortabilityEnvInput {

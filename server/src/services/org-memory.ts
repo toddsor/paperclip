@@ -252,5 +252,13 @@ export function orgMemoryService(db: Db) {
     });
   }
 
-  return { write, readForAgent, propagateUpward };
+  async function readAllForExport(companyId: string) {
+    return db
+      .select()
+      .from(orgMemory)
+      .where(eq(orgMemory.companyId, companyId))
+      .orderBy(orgMemory.scopeKind, orgMemory.key);
+  }
+
+  return { write, readForAgent, propagateUpward, readAllForExport };
 }

@@ -58,6 +58,7 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { orgMemoryService } from "./org-memory.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -110,6 +111,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   projects: false,
   issues: false,
   skills: false,
+  orgMemory: false,
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
@@ -134,6 +136,7 @@ function classifyPortableFileKind(pathValue: string): CompanyPortabilityExportPr
   if (normalized.startsWith("skills/")) return "skill";
   if (normalized.startsWith("projects/")) return "project";
   if (normalized.startsWith("tasks/")) return "issue";
+  if (normalized.startsWith("org-memory/")) return "other";
   return "other";
 }
 
@@ -1184,6 +1187,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     projects: input?.projects ?? DEFAULT_INCLUDE.projects,
     issues: input?.issues ?? DEFAULT_INCLUDE.issues,
     skills: input?.skills ?? DEFAULT_INCLUDE.skills,
+    orgMemory: input?.orgMemory ?? DEFAULT_INCLUDE.orgMemory,
   };
 }
 
@@ -3263,6 +3267,33 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    const orgMemorySvc = orgMemoryService(db);
+    const allOrgMemoryRows = await orgMemorySvc.readAllForExport(companyId);
+    if (include.orgMemory) {
+      const internalRows = allOrgMemoryRows.filter((r) => r.sensitivity === "internal");
+      const excludedCount = allOrgMemoryRows.length - internalRows.length;
+      if (internalRows.length > 0) {
+        finalFiles["org-memory/entries.yaml"] = buildYamlFile({
+          entries: internalRows.map((r) => ({
+            scopeKind: r.scopeKind,
+            scopeId: r.scopeId ?? null,
+            key: r.key,
+            value: r.valueJson,
+            propagate: r.propagate,
+          })),
+        });
+      }
+      if (excludedCount > 0) {
+        warnings.push(
+          `Excluded ${excludedCount} org memory ${excludedCount === 1 ? "entry" : "entries"} with sensitivity 'confidential' or 'restricted' from export.`,
+        );
+      }
+    } else if (allOrgMemoryRows.length > 0) {
+      warnings.push(
+        `${allOrgMemoryRows.length} org memory ${allOrgMemoryRows.length === 1 ? "entry was" : "entries were"} not included in this export. Set include.orgMemory: true to export internal entries.`,
+      );
+    }
+
     if (!input.selectedFiles || input.selectedFiles.some((entry) => normalizePortablePath(entry) === "README.md")) {
       finalFiles["README.md"] = generateReadme(resolved.manifest, {
         companyName: company.name,
@@ -3282,6 +3313,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
+    };
+    resolved.manifest.includes = {
+      ...resolved.manifest.includes,
+      orgMemory: "org-memory/entries.yaml" in finalFiles,
     };
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
     resolved.warnings.unshift(...warnings);
