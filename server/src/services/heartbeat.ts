@@ -768,6 +768,9 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  if (contextSnapshot["roleContextAvailable"] === undefined) {
+    contextSnapshot.roleContextAvailable = true;
+  }
 
   return {
     contextSnapshot,

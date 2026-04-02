@@ -64,11 +64,19 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
+const memoryArtifactSchema = z.object({
+  key: z.string().min(1).max(255),
+  value: z.unknown(),
+  sensitivity: z.enum(["internal", "confidential", "restricted"]).default("internal"),
+  propagate: z.boolean().default(true),
+});
+
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  memoryArtifact: memoryArtifactSchema.optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

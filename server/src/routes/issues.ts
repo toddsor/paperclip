@@ -28,6 +28,7 @@ import {
   issueService,
   documentService,
   logActivity,
+  orgMemoryService,
   projectService,
   routineService,
   workProductService,
@@ -57,6 +58,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
+  const orgMemorySvc = orgMemoryService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -418,12 +420,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [{ project, goal }, ancestors, commentCursor, wakeComment] = await Promise.all([
-      resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
-      svc.getCommentCursor(issue.id),
-      wakeCommentId ? svc.getComment(wakeCommentId) : null,
-    ]);
+    const callingAgentId =
+      req.actor.type === "agent" && req.actor.agentId ? req.actor.agentId : null;
+
+    const [{ project, goal }, ancestors, commentCursor, wakeComment, roleContext] =
+      await Promise.all([
+        resolveIssueProjectAndGoal(issue),
+        svc.getAncestors(issue.id),
+        svc.getCommentCursor(issue.id),
+        wakeCommentId ? svc.getComment(wakeCommentId) : null,
+        callingAgentId
+          ? orgMemorySvc.readForAgent(callingAgentId, issue.id)
+          : Promise.resolve(null),
+      ]);
 
     res.json({
       issue: {
@@ -469,6 +478,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         wakeComment && wakeComment.issueId === issue.id
           ? wakeComment
           : null,
+      roleContext,
     });
   });
 
@@ -1035,6 +1045,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       reopen: reopenRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      memoryArtifact,
       ...updateFields
     } = req.body;
     let interruptedRunId: string | null = null;
@@ -1147,6 +1158,36 @@ export function issueRoutes(db: Db, storage: StorageService) {
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
+
+    // Write memory artifact on close-out if provided.
+    if (memoryArtifact && issue.status === "done") {
+      const artifactScopeId = issue.goalId ?? issue.projectId ?? null;
+      const artifactScopeKind = issue.goalId ? "goal" : "project";
+      if (artifactScopeId) {
+        await orgMemorySvc.write({
+          companyId: issue.companyId,
+          scopeKind: artifactScopeKind,
+          scopeId: artifactScopeId,
+          key: memoryArtifact.key,
+          value: memoryArtifact.value,
+          sensitivity: memoryArtifact.sensitivity ?? "internal",
+          propagate: memoryArtifact.propagate ?? true,
+          sourceAgentId: actor.agentId,
+          sourceIssueId: issue.id,
+        });
+        if (actor.agentId) {
+          await orgMemorySvc.propagateUpward({
+            agentId: actor.agentId,
+            companyId: issue.companyId,
+            key: memoryArtifact.key,
+            value: memoryArtifact.value,
+            sourceIssueId: issue.id,
+            propagate: memoryArtifact.propagate ?? true,
+            sensitivity: memoryArtifact.sensitivity ?? "internal",
+          });
+        }
+      }
+    }
 
     let comment = null;
     if (commentBody) {
