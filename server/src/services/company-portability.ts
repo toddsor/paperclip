@@ -1846,6 +1846,7 @@ function applySelectedFilesToSource(source: ResolvedSource, selectedFiles?: stri
     projects: filtered.manifest.projects.length > 0,
     issues: filtered.manifest.issues.length > 0,
     skills: filtered.manifest.skills.length > 0,
+    orgMemory: false,
   };
 
   return filtered;
@@ -2301,6 +2302,7 @@ function buildManifestFromPackageFiles(
       projects: projectPaths.length > 0,
       issues: taskPaths.length > 0,
       skills: skillPaths.length > 0,
+      orgMemory: false,
     },
     company: {
       path: resolvedCompanyPath,
@@ -3252,6 +3254,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
+      orgMemory: false,
     };
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
     resolved.warnings.unshift(...warnings);
@@ -3313,9 +3316,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
-    };
-    resolved.manifest.includes = {
-      ...resolved.manifest.includes,
       orgMemory: "org-memory/entries.yaml" in finalFiles,
     };
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
@@ -3380,6 +3380,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: requestedInclude.projects && manifest.projects.length > 0,
       issues: requestedInclude.issues && manifest.issues.length > 0,
       skills: requestedInclude.skills && manifest.skills.length > 0,
+      orgMemory: requestedInclude.orgMemory && (manifest.includes.orgMemory ?? false),
     };
     const collisionStrategy = input.collisionStrategy ?? DEFAULT_COLLISION_STRATEGY;
     if (mode === "agent_safe" && collisionStrategy === "replace") {
