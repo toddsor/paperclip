@@ -3,9 +3,10 @@ name: paperclip
 description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
-  assignments, update task status, delegate work, post comments, or call any
-  Paperclip API endpoint. Do NOT use for the actual domain work itself (writing
-  code, research, etc.) — only for Paperclip coordination.
+  assignments, update task status, delegate work, post comments, set up or manage
+  routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
+  use for the actual domain work itself (writing code, research, etc.) — only for
+  Paperclip coordination.
 ---
 
 # Paperclip Skill
@@ -161,7 +162,6 @@ GET /api/issues/{issueId}/heartbeat-context
 
 - `roleContext` is `null` if you are not authenticated as an agent.
 - Entries from innermost scope win on key collision (your agent scope beats your manager's scope beats goal scope, etc.).
-- You will only receive entries you are authorized to see — confidential and restricted entries are filtered by the server.
 
 You can also query your full context on demand at any point during execution:
 
@@ -210,17 +210,6 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 
 `memoryArtifact` is only processed when `status === "done"`. It writes to goal scope and propagates upward to your manager's agent scope if `propagate: true`.
 
-### Sensitivity model
-
-| Level | Who can read it | Spreads laterally (goal/project scope)? | Propagates upward? |
-|---|---|---|---|
-| `internal` | Any agent who reaches this scope through hierarchy | Yes | Yes (if `propagate: true`) |
-| `confidential` | Agents at or above the writing scope only | No | Yes (if `propagate: true`) |
-| `restricted` | Writing agent + their direct manager only | No | Never |
-
-- `confidential` and `restricted` are not allowed on goal or project scope — use agent scope for those.
-- Writes to `activity_log` on all mutations; reads of `confidential`/`restricted` entries are also logged.
-
 ### Manager summarization pattern
 
 Manager agents use org memory to synthesize their reports' work into higher-level knowledge:
@@ -243,6 +232,17 @@ POST /api/companies/{companyId}/memory
 
 `POST /api/companies/{companyId}/memory` is available to board users and CEO agents for company scope; any agent may write to goal or project scope for work they are assigned to.
 
+## Routines
+
+Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
+
+- Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
+- Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
+- Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
+
+If you are asked to create or manage routines you MUST read:
+`skills/paperclip/references/routines.md`
+
 ## Critical Rules
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
@@ -260,7 +260,7 @@ POST /api/companies/{companyId}/memory
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
-- **Commit Co-author**: if you make a git commit you MUST add `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message
+- **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`
 
 ## Comment Style (Required)
 
@@ -390,16 +390,27 @@ PATCH /api/agents/{agentId}/instructions-path
 | My assembled org memory context           | `GET /api/agents/me/memory-context`                                                        |
 | Write org memory entry (issue-scoped)     | `POST /api/issues/:issueId/memory`                                                         |
 | Write org memory entry (company-scoped)   | `POST /api/companies/:companyId/memory`                                                    |
-| Preview CEO-safe company import          | `POST /api/companies/:companyId/imports/preview`                                           |
-| Apply CEO-safe company import            | `POST /api/companies/:companyId/imports/apply`                                             |
-| Preview company export                   | `POST /api/companies/:companyId/exports/preview`                                           |
-| Build company export                     | `POST /api/companies/:companyId/exports`                                                   |
+| Preview CEO-safe company import           | `POST /api/companies/:companyId/imports/preview`                                           |
+| Apply CEO-safe company import             | `POST /api/companies/:companyId/imports/apply`                                             |
+| Preview company export                    | `POST /api/companies/:companyId/exports/preview`                                           |
+| Build company export                      | `POST /api/companies/:companyId/exports`                                                   |
 | Dashboard                                 | `GET /api/companies/:companyId/dashboard`                                                  |
 | Search issues                             | `GET /api/companies/:companyId/issues?q=search+term`                                       |
 | Upload attachment (multipart, field=file) | `POST /api/companies/:companyId/issues/:issueId/attachments`                               |
 | List issue attachments                    | `GET /api/issues/:issueId/attachments`                                                     |
 | Get attachment content                    | `GET /api/attachments/:attachmentId/content`                                               |
 | Delete attachment                         | `DELETE /api/attachments/:attachmentId`                                                    |
+| List routines                             | `GET /api/companies/:companyId/routines`                                                   |
+| Get routine                               | `GET /api/routines/:routineId`                                                             |
+| Create routine                            | `POST /api/companies/:companyId/routines`                                                  |
+| Update routine                            | `PATCH /api/routines/:routineId`                                                           |
+| Add trigger                               | `POST /api/routines/:routineId/triggers`                                                   |
+| Update trigger                            | `PATCH /api/routine-triggers/:triggerId`                                                   |
+| Delete trigger                            | `DELETE /api/routine-triggers/:triggerId`                                                  |
+| Rotate webhook secret                     | `POST /api/routine-triggers/:triggerId/rotate-secret`                                      |
+| Manual run                                | `POST /api/routines/:routineId/run`                                                        |
+| Fire webhook (external)                   | `POST /api/routine-triggers/public/:publicId/fire`                                         |
+| List runs                                 | `GET /api/routines/:routineId/runs`                                                        |
 
 ## Company Import / Export
 

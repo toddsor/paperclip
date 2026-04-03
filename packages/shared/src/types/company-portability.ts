@@ -32,6 +32,10 @@ export interface CompanyPortabilityCompanyManifestEntry {
   brandColor: string | null;
   logoPath: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  feedbackDataSharingEnabled: boolean;
+  feedbackDataSharingConsentAt: string | null;
+  feedbackDataSharingConsentByUserId: string | null;
+  feedbackDataSharingTermsVersion: string | null;
 }
 
 export interface CompanyPortabilitySidebarOrder {
@@ -53,6 +57,8 @@ export interface CompanyPortabilityProjectManifestEntry {
   workspaces: CompanyPortabilityProjectWorkspaceManifestEntry[];
   metadata: Record<string, unknown> | null;
 }
+
+import type { RoutineVariable } from "./routine.js";
 
 export interface CompanyPortabilityProjectWorkspaceManifestEntry {
   key: string;
@@ -81,6 +87,7 @@ export interface CompanyPortabilityIssueRoutineTriggerManifestEntry {
 export interface CompanyPortabilityIssueRoutineManifestEntry {
   concurrencyPolicy: string | null;
   catchUpPolicy: string | null;
+  variables?: RoutineVariable[] | null;
   triggers: CompanyPortabilityIssueRoutineTriggerManifestEntry[];
 }
 
