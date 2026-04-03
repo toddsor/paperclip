@@ -219,9 +219,9 @@ describeEmbeddedPostgres("orgMemoryService", () => {
     expect(entries.some((e) => e.key === "goal_note")).toBe(true);
   });
 
-  // ── sensitivity filtering ─────────────────────────────────────────────────
+  // ── sensitivity is metadata only — scope controls visibility ─────────────
 
-  it("confidential entries are not visible via goal/project lateral scope", async () => {
+  it("confidential entries are visible via goal/project scope (sensitivity does not filter)", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);
     const goalId = await seedGoal(companyId);
@@ -233,22 +233,21 @@ describeEmbeddedPostgres("orgMemoryService", () => {
       companyId,
       scopeKind: "goal",
       scopeId: goalId,
-      key: "secret_goal_key",
-      valueJson: "secret",
+      key: "confidential_goal_key",
+      valueJson: "sensitive_val",
       sensitivity: "confidential",
       propagate: false,
       sourceAgentId: null,
     });
 
     const { entries } = await svc.readForAgent(agentId, issueId);
-    expect(entries.some((e) => e.key === "secret_goal_key")).toBe(false);
+    expect(entries.some((e) => e.key === "confidential_goal_key")).toBe(true);
   });
 
-  it("restricted entry is visible to the writing agent but not to peers", async () => {
+  it("restricted entry is visible to agents in scope (sensitivity does not filter)", async () => {
     const companyId = await seedCompany();
     const managerId = await seedAgent(companyId);
     const workerId = await seedAgent(companyId, managerId);
-    const peerId = await seedAgent(companyId, managerId);
     const svc = orgMemoryService(db);
 
     await db.insert(orgMemory).values({
@@ -262,13 +261,13 @@ describeEmbeddedPostgres("orgMemoryService", () => {
       sourceAgentId: workerId,
     });
 
-    // Writing agent can read it.
+    // Writing agent can read its own agent-scoped entry.
     const { entries: workerEntries } = await svc.readForAgent(workerId);
     expect(workerEntries.some((e) => e.key === "restricted_key")).toBe(true);
 
-    // Peer cannot read it.
-    const { entries: peerEntries } = await svc.readForAgent(peerId);
-    expect(peerEntries.some((e) => e.key === "restricted_key")).toBe(false);
+    // Manager can read it via reportsTo chain traversal.
+    const { entries: managerEntries } = await svc.readForAgent(managerId);
+    expect(managerEntries.some((e) => e.key === "restricted_key")).toBe(true);
   });
 
   it("agents with no reportsTo receive company-scoped entries and no traversal errors", async () => {
