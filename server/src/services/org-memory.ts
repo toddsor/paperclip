@@ -20,9 +20,6 @@ export interface RoleContext {
 
 const SCOPE_KINDS: ScopeKind[] = ["company", "project", "goal", "agent_role", "agent"];
 
-// Scopes through which internal entries spread laterally (peer agents on same goal/project).
-const LATERAL_SCOPES = new Set<ScopeKind>(["goal", "project", "company"]);
-
 export function orgMemoryService(db: Db) {
   async function write(input: {
     companyId: string;
@@ -161,29 +158,6 @@ export function orgMemoryService(db: Db) {
     const entries: OrgMemoryEntry[] = [];
 
     for (const row of sorted) {
-      let visibleToCallingAgent = true;
-      if (row.sensitivity === "restricted") {
-        // Visible only to the writing agent itself or to an agent whose id is
-        // the source agent's direct manager.
-        if (row.sourceAgentId && row.sourceAgentId !== agentId) {
-          // Check if the calling agent is the direct manager of the source agent.
-          const [sourceAgent] = await db
-            .select({ reportsTo: agents.reportsTo })
-            .from(agents)
-            .where(eq(agents.id, row.sourceAgentId));
-          visibleToCallingAgent = sourceAgent?.reportsTo === agentId;
-        } else if (!row.sourceAgentId) {
-          visibleToCallingAgent = false;
-        }
-      } else if (row.sensitivity === "confidential") {
-        // Confidential entries do not spread laterally through goal/project scope.
-        if (LATERAL_SCOPES.has(row.scopeKind as ScopeKind) && row.scopeKind !== "company") {
-          visibleToCallingAgent = false;
-        }
-      }
-
-      if (!visibleToCallingAgent) continue;
-
       if (!seen.has(row.key)) {
         seen.add(row.key);
         entries.push({
@@ -194,26 +168,6 @@ export function orgMemoryService(db: Db) {
           scopeId: row.scopeId,
         });
       }
-    }
-
-    // Audit-log reads of confidential/restricted entries.
-    const sensitiveRead = entries.filter(
-      (e) => e.sensitivity === "confidential" || e.sensitivity === "restricted",
-    );
-    if (sensitiveRead.length > 0) {
-      await logActivity(db, {
-        companyId,
-        actorType: "agent",
-        actorId: agentId,
-        agentId,
-        action: "org_memory.read_sensitive",
-        entityType: "org_memory",
-        entityId: agentId,
-        details: {
-          keys: sensitiveRead.map((e) => e.key),
-          issueId: issueId ?? null,
-        },
-      });
     }
 
     return { entries };
